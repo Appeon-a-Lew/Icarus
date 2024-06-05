@@ -1,5 +1,5 @@
 #!/bin/bash
-
+source /opt/intel/oneapi/setvars.sh
 # Function to compile and run the OneAPI version
 run_oneapi() {
     echo "Compiling and running OneAPI version..."
@@ -23,7 +23,7 @@ run_scheduler() {
     echo "Compiling and running custom scheduler version..."
     scheduler_source="maxi.cpp"
     scheduler_executable="scheduler_program"
-    g++ $scheduler_source -std=c++20 -ltbb -lpthread -latomic -o $scheduler_executable
+    clang++ $scheduler_source -std=c++20 -ltbb -lpthread -latomic -o $scheduler_executable
     ./$scheduler_executable
 }
 

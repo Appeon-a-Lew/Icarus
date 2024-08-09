@@ -5,7 +5,7 @@ run_oneapi() {
     echo "Compiling and running OneAPI version..."
     oneapi_source="oneapi.cpp"
     oneapi_executable="oneapi_program"
-     icpx -fsycl -o $oneapi_executable $oneapi_source
+     icpx -fsycl -O3 -o  $oneapi_executable $oneapi_source
     ./$oneapi_executable
 }
 
@@ -23,7 +23,7 @@ run_scheduler() {
     echo "Compiling and running custom scheduler version..."
     scheduler_source="maxi.cpp"
     scheduler_executable="scheduler_program"
-    clang++ $scheduler_source -std=c++20 -ltbb -lpthread -latomic -o $scheduler_executable
+    icpx -fsycl $scheduler_source  -O2 -std=c++20 -ltbb -lpthread -latomic -o $scheduler_executable
     ./$scheduler_executable
 }
 

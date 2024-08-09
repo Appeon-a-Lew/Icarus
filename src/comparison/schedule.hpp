@@ -176,6 +176,115 @@ struct ThreadLocalVec {
     }
 };
 
+
+#include <atomic>
+#include <stdexcept>
+#include <vector>
+#include <algorithm>
+#include <optional>
+#include <thread>
+#include <cassert>
+#include <unistd.h>
+
+struct task_proxy {
+    intptr_t task_and_tag;
+    task_proxy *next_in_mailbox;
+    unsigned outbox_id;
+
+    task_proxy() : task_and_tag(0), next_in_mailbox(nullptr), outbox_id(0) {}
+
+    static const intptr_t pool_bit = 1 << 0;
+    static const intptr_t mailbox_bit = 1 << 1;
+    static const intptr_t location_mask = pool_bit | mailbox_bit;
+
+    static bool is_shared(intptr_t tat) {
+        return (tat & location_mask) == location_mask;
+    }
+
+    static void* task_ptr(intptr_t tat) {
+        return reinterpret_cast<void*>(tat & ~location_mask);
+    }
+};
+
+class mail_outbox {
+    using proxy_ptr = task_proxy*;
+    proxy_ptr my_first;
+    std::atomic<proxy_ptr*> my_last;
+    std::atomic<int> my_task_count;
+    bool my_is_idle;
+
+public:
+    mail_outbox() : my_first(nullptr), my_last(&my_first), my_task_count(0), my_is_idle(false) {}
+
+    bool push(task_proxy* t) {
+        if (my_task_count.load(std::memory_order_relaxed) > 32) {
+            return false;
+        }
+        my_task_count.fetch_add(1, std::memory_order_relaxed);
+        t->next_in_mailbox = nullptr;
+        proxy_ptr* link = my_last.exchange(&t->next_in_mailbox);
+        *link = t;
+        return true;
+    }
+
+    task_proxy* pop() {
+        task_proxy* curr = my_first;
+        if (!curr) return nullptr;
+        task_proxy** prev_ptr = &my_first;
+        if (task_proxy* second = curr->next_in_mailbox) {
+            *prev_ptr = second;
+        } else {
+            *prev_ptr = nullptr;
+            if (my_last.compare_exchange_strong(prev_ptr, &curr->next_in_mailbox)) {
+                // Successfully transitioned mailbox from having one item to having none.
+            } else {
+                while (!(second = curr->next_in_mailbox)) std::this_thread::yield();
+                *prev_ptr = second;
+            }
+        }
+        my_task_count.fetch_sub(1, std::memory_order_relaxed);
+        return curr;
+    }
+
+    bool empty() const {
+        return my_first == nullptr;
+    }
+
+    bool recipient_is_idle() const {
+        return my_is_idle;
+    }
+
+    void set_is_idle(bool value) {
+        my_is_idle = value;
+    }
+};
+
+class mail_inbox {
+    mail_outbox* my_putter;
+
+public:
+    mail_inbox() : my_putter(nullptr) {}
+
+    void attach(mail_outbox& putter) {
+        my_putter = &putter;
+    }
+
+    task_proxy* pop() {
+        return my_putter->pop();
+    }
+
+    bool empty() const {
+        return my_putter->empty();
+    }
+
+    void set_is_idle(bool value) {
+        if (my_putter) {
+            my_putter->set_is_idle(value);
+        }
+    }
+};
+
+
 struct EMPTY_TYPE {};
 struct MaxisScheduler : ThreadLocalProvider {
     using self_t = MaxisScheduler;
@@ -204,7 +313,7 @@ struct MaxisScheduler : ThreadLocalProvider {
 
     struct Config : RuntimeConfig {
         unsigned threads{std::thread::hardware_concurrency()};
-        int pin{-1};
+        int pin{1};
 
         template<typename F>
         Config with(F fn) const {
@@ -214,33 +323,34 @@ struct MaxisScheduler : ThreadLocalProvider {
         }
     };
 
-    struct Execution {
+   struct Execution {
         struct alignas(16) range_t { item_t start; item_t end; };
-        struct alignas(64) ThreadState  {
-            // TODO use lock instead; 128bit CAS is slow (-> agnar fog) and requires libatomic
-            std::atomic<range_t> range{{-1ul, -1ul}};
-            morsel_t current_morsel{-1ul,-1ul};
-            bool done{false};
+        struct alignas(64) ThreadState {
+    // Mutex to protect access to range
+    std::mutex range_mutex;
+    range_t range{-1ul, -1ul};  // No longer atomic
+    morsel_t current_morsel{-1ul, -1ul};
+    bool done{false};
 
-            std::atomic<size_t> processed{0};
+    std::atomic<size_t> processed{0};
 
-            ThreadState() = default;
-            ThreadState(const ThreadState& o) {
-                throw std::logic_error("copy assign threadstate");
-            }
+    ThreadState() = default;
+    ThreadState(const ThreadState& o) {
+        throw std::logic_error("copy assign threadstate");
+    }
 
-            morsel_t* mark_processed_and_get() {
-                processed.fetch_add(current_morsel.size(), std::memory_order_relaxed);
-                return &current_morsel;
-            }
+    morsel_t* mark_processed_and_get() {
+        processed.fetch_add(current_morsel.size(), std::memory_order_relaxed);
+        return &current_morsel;
+    }
 
-            void assign_morsel(size_t size) {
-                auto [start, end] = range.load();
-                current_morsel = morsel_t(start, std::min(start + size, end));
-            }
-        };
-
-        // std::atomic<uint64_t> joinable_count{0};
+    void assign_morsel(size_t size) {
+        std::lock_guard<std::mutex> lock(range_mutex);
+        auto [start, end] = range;
+        current_morsel = morsel_t(start, std::min(start + size, end));
+    }
+};
+       // std::atomic<uint64_t> joinable_count{0};
         std::atomic<uint64_t> done_count{0};
         std::atomic<unsigned> hints_used{0};
         const RuntimeConfig& config;
@@ -251,44 +361,59 @@ struct MaxisScheduler : ThreadLocalProvider {
 
         DEBUGGING(std::atomic<uint64_t> worker_count{0}; std::atomic<uint64_t> processed{0};)
 
-
-        Execution(const Config& global_config, const RuntimeConfig& config, const worker_t& worker, item_t items)
-            : config(config)
-            , item_count(items)
-            , thread_count(global_config.threads)
-            , worker(worker)
-            , cursors(global_config.threads) {
-            const auto& hints = *config.morsel_hints;
-            //auto morsel_start_size = get_morsel_size(config.morsel_size * config.initial_morsel_multiplier);
-            if (hints.size()) {
-                if (hints.size() < thread_count) {
-                    throw std::logic_error("need to provide at least as much morsel hints as threads");
-                }
-                assert(hints[0] == 0);
-                // assign based on hints
-                cursors[0].range = {0, -1ul};
-                for (auto i =1u; i!=thread_count; ++i) {
-                    cursors[i].range = {hints[i], -1ul};
-                    cursors[i-1].range = {cursors[i-1].range.load().start, hints[i]};
-                }
-                if (hints.size() > thread_count) {
-                    cursors.back().range = {cursors.back().range.load().start, hints[thread_count]};
-                    hints_used = thread_count;
-                } else {
-                    cursors.back().range = {cursors.back().range.load().start, items};
-                    hints_used = hints.size();
-                }
-            } else {
-               // assign spread throughout
-               size_t per_thread_size = items / thread_count;
-               for (auto i = 0u; i!=thread_count; ++i) {
-                   cursors[i].range = range_t{i * per_thread_size, (i + 1) == thread_count ? items : (i + 1) * per_thread_size};
-               }
-               hints_used = 0;
+Execution(const Config& global_config, const RuntimeConfig& config, const worker_t& worker, item_t items)
+        : config(config)
+        , item_count(items)
+        , thread_count(global_config.threads)
+        , worker(worker)
+        , cursors(global_config.threads) {
+        
+        const auto& hints = *config.morsel_hints;
+        
+        if (hints.size()) {
+            if (hints.size() < thread_count) {
+                throw std::logic_error("need to provide at least as much morsel hints as threads");
             }
+            assert(hints[0] == 0);
+            // assign based on hints
+            {
+                std::lock_guard<std::mutex> lock(cursors[0].range_mutex);
+                cursors[0].range = {0, -1ul};
+            }
+            for (auto i = 1u; i != thread_count; ++i) {
+                {
+                    std::lock_guard<std::mutex> lock(cursors[i].range_mutex);
+                    cursors[i].range = {hints[i], -1ul};
+                }
+                {
+                    std::lock_guard<std::mutex> lock(cursors[i - 1].range_mutex);
+                    cursors[i - 1].range.end = hints[i];
+                }
+            }
+            if (hints.size() > thread_count) {
+                {
+                    std::lock_guard<std::mutex> lock(cursors.back().range_mutex);
+                    cursors.back().range.end = hints[thread_count];
+                }
+                hints_used = thread_count;
+            } else {
+                {
+                    std::lock_guard<std::mutex> lock(cursors.back().range_mutex);
+                    cursors.back().range.end = items;
+                }
+                hints_used = hints.size();
+            }
+        } else {
+            // assign spread throughout
+            size_t per_thread_size = items / thread_count;
+            for (auto i = 0u; i != thread_count; ++i) {
+                std::lock_guard<std::mutex> lock(cursors[i].range_mutex);
+                cursors[i].range = range_t{i * per_thread_size, (i + 1) == thread_count ? items : (i + 1) * per_thread_size};
+            }
+            hints_used = 0;
         }
-
-        morsel_t* next(unsigned tid, std::optional<item_t> size = std::nullopt, unsigned sleep_time = 1) {
+    }
+            morsel_t* next(unsigned tid, std::optional<item_t> size = std::nullopt, unsigned sleep_time = 1) {
             auto& lstate = cursors[tid];
 
             if (done_count == thread_count) {
@@ -300,7 +425,7 @@ struct MaxisScheduler : ThreadLocalProvider {
                     lstate.done = true;
                     goto steal;
                 }
-                DEBUGGING(processed += lstate.current_morsel.size());
+                //DEBUGGING(processed += lstate.current_morsel.size());
                 lstate.processed.fetch_add(lstate.current_morsel.size(), std::memory_order_release);
                 return lstate.mark_processed_and_get();
             } /*else if (joinable_count == (thread_count - 1)) {return nullptr;}*/
@@ -313,7 +438,7 @@ struct MaxisScheduler : ThreadLocalProvider {
                 auto neighbour_id = (tid + offset) % thread_count;
                 auto& neighbour = cursors[neighbour_id];
                 if (!neighbour.done && get_work_from(lstate, neighbour)) {
-                    DEBUGGING(processed += lstate.current_morsel.size());
+                    //DEBUGGING(processed += lstate.current_morsel.size());
                     return lstate.mark_processed_and_get();
                 }
                 overall_processed += neighbour.processed;
@@ -329,38 +454,51 @@ struct MaxisScheduler : ThreadLocalProvider {
             return next(tid, size, 2*sleep_time);
         }
 
-        bool get_work_from(ThreadState& me, ThreadState& other, std::optional<item_t> size = std::nullopt) {
-            auto expected = other.range.load();
-            auto morsel_size = get_morsel_size(size);
-            do {
-                if (expected.start >= expected.end) { return false; }
-            } while (!other.range.compare_exchange_weak(expected, {std::min(expected.start + morsel_size, expected.end), expected.end}));
-            // TODO initial morsel correct? is expected now the previous or new range?
-            me.current_morsel = morsel_t(expected.start, std::min(expected.start + morsel_size, expected.end));
-            return true;
-        }
+     bool get_work_from(ThreadState& me, ThreadState& other, std::optional<item_t> size = std::nullopt) {
+    std::lock_guard<std::mutex> lock(other.range_mutex);
+    auto expected = other.range;
+    auto morsel_size = get_morsel_size(size);
 
-        bool get_work_from_hint(ThreadState& s) {
-            auto& hints = *config.morsel_hints;
-            if (hints.size() == 0 || hints_used >= hints.size()) { return false; }
-            //std::cout << "using hints" << std::endl;
-            range_t target; size_t next_hint;
-            do {
-                next_hint = hints_used++;
-                if (next_hint >= hints.size()) { return false; }
-                target = {hints[next_hint], (next_hint + 1) == hints.size() ? item_count : hints[next_hint + 1]};
-            } while (target.start >= target.end);
-            size_t morsel_size =
-                std::min(get_morsel_size(config.morsel_size * config.initial_morsel_multiplier),
-                         target.end - target.start);
-            target.start += morsel_size;
-            auto expected = s.range.load();
-            while (!s.range.compare_exchange_weak(expected, target)) {};
-            s.current_morsel = morsel_t(target.start - morsel_size, target.start);
-            return true;
-        }
+    if (expected.start >= expected.end) {
+        return false;
+    }
 
-        size_t get_morsel_size(std::optional<item_t> size = std::nullopt) {
+    other.range = {std::min(expected.start + morsel_size, expected.end), expected.end};
+
+    // TODO initial morsel correct? is expected now the previous or new range?
+    me.current_morsel = morsel_t(expected.start, std::min(expected.start + morsel_size, expected.end));
+    return true;
+}
+
+bool get_work_from_hint(ThreadState& s) {
+    auto& hints = *config.morsel_hints;
+    if (hints.size() == 0 || hints_used >= hints.size()) {
+        return false;
+    }
+
+    range_t target;
+    size_t next_hint;
+    do {
+        next_hint = hints_used++;
+        if (next_hint >= hints.size()) {
+            return false;
+        }
+        target = {hints[next_hint], (next_hint + 1) == hints.size() ? item_count : hints[next_hint + 1]};
+    } while (target.start >= target.end);
+
+    size_t morsel_size = std::min(get_morsel_size(config.morsel_size * config.initial_morsel_multiplier),
+                                  target.end - target.start);
+    target.start += morsel_size;
+
+    {
+        std::lock_guard<std::mutex> lock(s.range_mutex);
+        s.range = target;
+    }
+
+    s.current_morsel = morsel_t(target.start - morsel_size, target.start);
+    return true;
+}
+       size_t get_morsel_size(std::optional<item_t> size = std::nullopt) {
             return std::max(static_cast<item_t>(1ul), size.value_or(config.morsel_size));
         }
     };  // struct Execution
@@ -514,6 +652,14 @@ private:
     }
 };  // struct MaxisScheduler
 
+
+
+struct TaskTiming {
+    std::chrono::steady_clock::time_point available_time;
+    std::chrono::steady_clock::time_point start_time;
+    std::chrono::steady_clock::time_point end_time;
+    unsigned thread_id;
+};
 struct scheduler {
     using scheduler_t = MaxisScheduler;
     using exec_t = scheduler_t::Execution;
@@ -567,7 +713,8 @@ struct scheduler {
         inst.execute(count, fn, inst.config.with(cfgfn));
     }
 
-    template<typename F>
+
+  template<typename F>
     static void parallel_for(const morsel_t& range, F fn, config_t override_cfg) {
         auto& inst = instance();
         auto cfg = override_cfg.with([&range, &inst](auto& r) {
@@ -584,6 +731,77 @@ struct scheduler {
             }
         }, cfg);
     }
+
+
+  template<typename F>
+  static void parallel_for_latency(const morsel_t& range, F fn, config_t override_cfg) {
+    auto& inst = instance();
+    auto cfg = override_cfg.with([&range, &inst](auto& r) {
+        if (range.grainsize() != inst.config.morsel_size) {
+            r.morsel_size = range.grainsize();
+        } else {
+            r.morsel_size = std::max(1ul, range.size() / inst.config.threads / 8);
+        }
+    });
+    uint64_t offset = range.begin();
+        std::vector<std::vector<TaskTiming>> all_timings(inst.config.threads);
+    std::atomic<size_t> next_task_id(0);
+
+    // Record the time when tasks become available
+    auto tasks_available_time = std::chrono::steady_clock::now();
+
+    instance().execute(range.size(), [&](int tid, exec_t& exec) {
+        std::vector<TaskTiming>& thread_timings = all_timings[tid];
+        while(auto next = exec.next(tid)) {
+            size_t task_id = next_task_id.fetch_add(1);
+            auto start = std::chrono::steady_clock::now();
+            fn(morsel_t(offset + next->begin(), offset + next->end()));
+            auto end = std::chrono::steady_clock::now();
+            thread_timings.push_back({tasks_available_time, start, end, static_cast<unsigned>(tid)});
+        }
+    }, cfg);
+
+    // Aggregate and analyze results
+    std::vector<TaskTiming> all_task_timings;
+    for (const auto& thread_timings : all_timings) {
+        all_task_timings.insert(all_task_timings.end(), thread_timings.begin(), thread_timings.end());
+    }
+
+    // Calculate statistics for both scheduling and execution latency
+    std::vector<std::chrono::nanoseconds> scheduling_latencies;
+    std::vector<std::chrono::nanoseconds> execution_latencies;
+
+    for (const auto& timing : all_task_timings) {
+        scheduling_latencies.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timing.start_time - timing.available_time));
+        execution_latencies.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timing.end_time - timing.start_time));
+    }
+
+    // Calculate and print statistics for both latencies
+   auto  print_stats = [](const std::vector<std::chrono::nanoseconds>& latencies, const std::string& label) {
+    // Create a non-const copy of the latencies for sorting
+    std::vector<std::chrono::nanoseconds> sorted_latencies = latencies;
+    std::sort(sorted_latencies.begin(), sorted_latencies.end(), [](const auto& a, const auto& b) { return a.count() < b.count(); });
+
+    auto total = std::accumulate(sorted_latencies.begin(), sorted_latencies.end(), std::chrono::nanoseconds(0));
+    auto avg = total / sorted_latencies.size();
+    auto median = sorted_latencies[sorted_latencies.size() / 2];
+    auto min = sorted_latencies.front();
+    auto max = sorted_latencies.back();
+
+    std::cout << label << " Latency Statistics:\n"
+              << "  Average: " << avg.count() << " ns\n"
+              << "  Median:  " << median.count() << " ns\n"
+              << "  Min:     " << min.count() << " ns\n"
+              << "  Max:     " << max.count() << " ns\n";
+};
+    print_stats(scheduling_latencies, "Scheduling");
+    print_stats(execution_latencies, "Execution");
+}
+
+
+
 
     template<typename F>
     static void parallel_for(const morsel_t& range, F fn) {

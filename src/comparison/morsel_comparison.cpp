@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <ostream>
 #include <sycl/sycl.hpp>
 #include <chrono>
 #include <vector>
@@ -9,19 +10,15 @@
 #include <tbb/parallel_for_each.h>
 #include <tbb/global_control.h>
 #include <cmath>
+#include <tbb/tbb.h>
 #include "schedule.hpp"  
 
-const int MIN_ARRAY_SIZE = 7e5;
-const int MAX_ARRAY_SIZE = 2e6;
+const int MIN_ARRAY_SIZE = 7e7;
+const int MAX_ARRAY_SIZE = 2e8;
 const int NUM_RUNS = 5;
 
 void heavy_computation(int& x) {
-    double result = 0.0;
-    for (int i = 0; i < x; ++i) {
-        result += std::pow(std::sin(i), 2) + std::log(i + 1) * std::cos(i) + std::sqrt(i + x);
-    }
-    x = static_cast<int>(result) % 1000;
-}
+   }
 
 std::vector<int> initialize_data(int size) {
     std::vector<int> data(size);
@@ -58,16 +55,7 @@ double run_sycl(std::vector<int>& data) {
         auto data_acc = data_buf.get_access<sycl::access::mode::read_write>(cgh);
 
         cgh.parallel_for<class heavy_jobs>(range, [=](sycl::id<1> idx) {
-            int x = data_acc[idx];
-            double result = 0.0;
-            for (int i = 0; i < x; ++i) {
-                result += std::pow(sycl::sin(static_cast<double>(i)), 2.0) + 
-                          sycl::log(static_cast<double>(i) + 1.0) * 
-                          sycl::cos(static_cast<double>(i)) + 
-                          sycl::sqrt(static_cast<double>(i + x));
-            }
-            data_acc[idx] = static_cast<int>(result) % 1000;
-        });
+          });
     });
 
     queue.wait();
@@ -79,14 +67,39 @@ double run_sycl(std::vector<int>& data) {
 }
 
 double run_tbb_simple(std::vector<int>& data) {
+    tbb::concurrent_vector<double> latencies;
     auto start = std::chrono::high_resolution_clock::now();
     tbb::parallel_for_each(data.begin(), data.end(),
-        [](int& x) {
+        [&latencies,start](int& x) {
+
+            auto tast_start = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> latency = tast_start - start;
+            latencies.push_back(latency.count());
             heavy_computation(x);
         });
 
     auto end = std::chrono::high_resolution_clock::now();
+
+
     std::chrono::duration<double> diff = end - start;
+  
+
+    auto min_latency = *std::min_element(latencies.begin(), latencies.end());
+    auto max_latency = *std::max_element(latencies.begin(), latencies.end());
+    double avg_latency = std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
+
+    std::sort(latencies.begin(), latencies.end());
+    double median_latency = latencies.size() % 2 == 0
+        ? (latencies[latencies.size() / 2 - 1] + latencies[latencies.size() / 2]) / 2.0
+        : latencies[latencies.size() / 2];
+
+    // Print out the results
+    std::cout << "Average scheduling latency: " << avg_latency << " seconds" << std::endl;
+    std::cout << "Median scheduling latency: " << median_latency << " seconds" << std::endl;
+    std::cout << "Minimum scheduling latency: " << min_latency << " seconds" << std::endl;
+    std::cout << "Maximum scheduling latency: " << max_latency << " seconds" << std::endl;
+    std::cout << "NUMBER OF JOBS:" << latencies.size() << "\n";
+
     return diff.count();
 }
 
@@ -109,12 +122,14 @@ double run_tbb_blocked(std::vector<int>& data) {
 
 double run_maxis_scheduler(std::vector<int>& data, auto cfg) {
     auto start = std::chrono::high_resolution_clock::now();
-    sched::parallel_for(sched::range(0, data.size()), [&](const sched::range& r) {
+    sched::parallel_for_latency(sched::range(0, data.size()), [&](const sched::range& r) {
         for (size_t i = r.begin(); i != r.end(); ++i) {
             heavy_computation(data[i]);
         }
     },cfg);
-
+    //sched::parallel_for_each(data.begin(), data.end(), [](int& r) {
+    //   heavy_computation(r);
+    //}); 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
     return diff.count();
@@ -144,8 +159,12 @@ int main() {
         std::vector<size_t> morsel_hints(sched::thread_count());
         std::uniform_int_distribution<> hint_dist(0, array_size);
         for (unsigned j = 0; j < (sched::thread_count()); ++j) {
+          
             morsel_hints[j] = hint_dist(gen);
+        
+            std::cout << morsel_hints[j] << ", ";
         }
+        std::cout << std::endl; 
         std::sort(morsel_hints.begin(), morsel_hints.end());
         morsel_hints[0] = 0;
         morsel_hints[morsel_hints.size()-1] = array_size;

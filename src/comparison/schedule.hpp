@@ -361,7 +361,7 @@ struct MaxisScheduler : ThreadLocalProvider {
 
         DEBUGGING(std::atomic<uint64_t> worker_count{0}; std::atomic<uint64_t> processed{0};)
 
-Execution(const Config& global_config, const RuntimeConfig& config, const worker_t& worker, item_t items)
+    Execution(const Config& global_config, const RuntimeConfig& config, const worker_t& worker, item_t items)
         : config(config)
         , item_count(items)
         , thread_count(global_config.threads)
@@ -748,11 +748,15 @@ struct scheduler {
     std::atomic<size_t> next_task_id(0);
 
     // Record the time when tasks become available
+
     auto tasks_available_time = std::chrono::steady_clock::now();
 
     instance().execute(range.size(), [&](int tid, exec_t& exec) {
         std::vector<TaskTiming>& thread_timings = all_timings[tid];
-        while(auto next = exec.next(tid)) {
+        while( 1 ) {
+            
+            auto next = exec.next(tid);
+            if(!next)break;
             size_t task_id = next_task_id.fetch_add(1);
             auto start = std::chrono::steady_clock::now();
             fn(morsel_t(offset + next->begin(), offset + next->end()));
@@ -794,7 +798,8 @@ struct scheduler {
               << "  Average: " << avg.count() << " ns\n"
               << "  Median:  " << median.count() << " ns\n"
               << "  Min:     " << min.count() << " ns\n"
-              << "  Max:     " << max.count() << " ns\n";
+              << "  Max:     " << max.count() << " ns\n"
+              << " NUMBER OF JOBS: " << sorted_latencies.size()  << "\n";
 };
     print_stats(scheduling_latencies, "Scheduling");
     print_stats(execution_latencies, "Execution");

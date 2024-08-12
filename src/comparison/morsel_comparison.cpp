@@ -4,6 +4,7 @@
 #include <ostream>
 #include <sycl/sycl.hpp>
 #include <chrono>
+#include <unistd.h>
 #include <vector>
 #include <random>
 #include <tbb/parallel_for.h>
@@ -18,7 +19,13 @@ const int MAX_ARRAY_SIZE = 2e8;
 const int NUM_RUNS = 5;
 
 void heavy_computation(int& x) {
-   }
+  double tmp = 0;
+  for (size_t i = 0; i < x ;i++) {
+
+      tmp += sin(x) * cos(x) + sqrt(x);
+  }
+  x = static_cast<int>(tmp) % 1000;
+}
 
 std::vector<int> initialize_data(int size) {
     std::vector<int> data(size);
@@ -67,14 +74,17 @@ double run_sycl(std::vector<int>& data) {
 }
 
 double run_tbb_simple(std::vector<int>& data) {
+   
     tbb::concurrent_vector<double> latencies;
+  
     auto start = std::chrono::high_resolution_clock::now();
     tbb::parallel_for_each(data.begin(), data.end(),
         [&latencies,start](int& x) {
-
+  #ifdef aaaa 
             auto tast_start = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> latency = tast_start - start;
             latencies.push_back(latency.count());
+  #endif 
             heavy_computation(x);
         });
 
@@ -83,7 +93,7 @@ double run_tbb_simple(std::vector<int>& data) {
 
     std::chrono::duration<double> diff = end - start;
   
-
+  #ifdef aaaa
     auto min_latency = *std::min_element(latencies.begin(), latencies.end());
     auto max_latency = *std::max_element(latencies.begin(), latencies.end());
     double avg_latency = std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
@@ -99,7 +109,7 @@ double run_tbb_simple(std::vector<int>& data) {
     std::cout << "Minimum scheduling latency: " << min_latency << " seconds" << std::endl;
     std::cout << "Maximum scheduling latency: " << max_latency << " seconds" << std::endl;
     std::cout << "NUMBER OF JOBS:" << latencies.size() << "\n";
-
+  #endif 
     return diff.count();
 }
 
@@ -122,7 +132,7 @@ double run_tbb_blocked(std::vector<int>& data) {
 
 double run_maxis_scheduler(std::vector<int>& data, auto cfg) {
     auto start = std::chrono::high_resolution_clock::now();
-    sched::parallel_for_latency(sched::range(0, data.size()), [&](const sched::range& r) {
+    sched::parallel_for(sched::range(0, data.size()), [&](const sched::range& r) {
         for (size_t i = r.begin(); i != r.end(); ++i) {
             heavy_computation(data[i]);
         }

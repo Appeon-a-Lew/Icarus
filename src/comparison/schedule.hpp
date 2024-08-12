@@ -624,19 +624,44 @@ struct scheduler {
     inst.execute(count, fn, inst.config.with(cfgfn));
   }
 
+  template<typename F>
+  static size_t get_optimal_morsel_size(size_t start, size_t end, F fn){
+    size_t done = 0;
+    size_t sz = 1;
+    unsigned long long int ticks = 0;
+    do {
+        sz = std::min(sz, end - (start + done));
+        auto tstart = std::chrono::steady_clock::now();
+        fn(morsel_t(start + done, start + done + sz));
+        auto tstop = std::chrono::steady_clock::now();
+        ticks = static_cast<unsigned long long int>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(tstop - tstart).count()
+        );
+        done += sz;
+        sz *= 2;
+    } while (ticks < 10000000 && done < (end - start));
+    return done;
+  }
+
+
 
   template<typename F>
   static void parallel_for(const morsel_t& range, F fn, config_t override_cfg) {
     auto& inst = instance();
-    auto cfg = override_cfg.with([&range, &inst](auto& r) {
+      size_t increment = 0; 
+      auto cfg = override_cfg.with([&range, &inst,&increment,&fn](auto& r) {
       if (range.grainsize() != inst.config.morsel_size) {
         r.morsel_size = range.grainsize();
       } else {
-        r.morsel_size = std::max(1ul, range.size() / inst.config.threads / 128);
+        increment = get_optimal_morsel_size(range.begin(),range.end(),fn);
+        r.morsel_size = std::max(1ul,increment); //std::max(1ul, range.size() / static_cast<size_t>(inst.config.threads  * 512));
       }
     });
-    uint64_t offset = range.begin();
-    instance().execute(range.size(), [&](int tid, exec_t& exec) {
+    morsel_t adjusted_morsel = morsel_t(range.begin() + increment , range.end());
+ //   std::cout<< "[DBG]: Morsel size: " << cfg.morsel_size << "\n"; 
+ //   std::cout<< "[DBG]: increment size: " << increment << "\n";
+    uint64_t offset = adjusted_morsel.begin();
+    instance().execute(adjusted_morsel.size(), [&](int tid, exec_t& exec) {
       while(auto next = exec.next(tid)) {
         fn(morsel_t(offset + next->begin(), offset + next->end()));
       }
@@ -651,7 +676,7 @@ struct scheduler {
       if (range.grainsize() != inst.config.morsel_size) {
         r.morsel_size = range.grainsize();
       } else {
-        r.morsel_size = std::max(1ul, range.size() / inst.config.threads / 8);
+        r.morsel_size = std::max(1ul, range.size() / static_cast<size_t>(inst.config.threads  * 128));
       }
     });
     uint64_t offset = range.begin();

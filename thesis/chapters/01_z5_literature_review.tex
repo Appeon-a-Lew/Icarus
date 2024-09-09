@@ -4,3 +4,139 @@
 Todo: Compare common scheduling tactics. Give an overview and show the uniqueness of the morsels. 
 Todo: Read more into NVidia Bend 
 Todo: Read more into Volcano and time share based scheduling
+
+
+
+
+How does OneTBB formerly known as TBB works (Parallel_for). 
+We are going to investigate how the parallel_for is invoked during its execution. 
+
+First we need to understand how the overlying work is going to be processed. 
+Parallel for defines structs called start_for that are oneTBB tasks and hold a range and an 
+invokable body. There is also an optional partitioner. 
+
+The execution point starts at aptly named function "run" which gathers the task_group_context of the 
+current execution and calls the execute_and_wait in the task_dispathcher. 
+This method creates a waitable point and executes the task in another method "local_wait_for_all"
+The method naming is bad. It is a worker method that executes infinitely until task_group_context is 
+signaled to exit. It starts with the given task and after its execution tries to get more 
+tasks by calling receive_or_steal_task. This method is where the mailboxing is used. 
+There are tiered levels of tasks. Mailbox which is a fancy way to receive the initial job,
+use the task_stream which is a fancy way to express the own task queue and finally stealing. 
+
+The first task that is being executed is not the range nor the function that was given to parallel_for. 
+It is rather the execute function of the partitioner. It uses the offer_work to split the current range in 
+two (almost equal) ranges. After this range is split, depending on the type of partitioner(any partiotioner other than simple)
+the job is spawned (again in task_dispathcher) using task_proxy to the mailbox of another thread, or own task_steam if the slot_id is the same. 
+While putting it in the mailbox spawn_and_notify spawns the task in the task_arena in the correct slot_id and a/many worker/s is/are woken. 
+After receiving the first task, which is another partiotioner execution call, the next thread starts to partiotion as well. 
+
+This way earlier threads push/mail more tasks to the later threads and those threads can use the efficient and non blocking mailbox calls to 
+acquire jobs instead of stealing. 
+
+When the execution reaches the granulity level it invokes the body, which is where the real calculation is. 
+
+Strictly speaking TBB is utilizing fork-join with task_pooling(arena).
+
+
+
+Why this is good? 
+
+The first tasks are splitting tasks which are themselves light work comparatively. If we ready up all the threads and 
+they start at the same time we run into a big start latency. By dynamically dispatching we guarantee quadratic spawn rate 
+as supposed to linear. 
+
+
+
+
+
+\subsection{Definitions}
+
+\subsubsection{NUMA}
+Non Uniform Memory Access. It is a hierarchical memory system where each processor has access to all of the memory in steps. 
+Registers, cache and main memory. The optimizations in the current meta is the cache optimizations as one single cache miss 
+can result into 70-100 cycles wasted. In that sense the morsels, aka blocked ranges that occupy a chunk in the cache, are 
+an improvement to the computations. If two programs display similar execution characteristics the one with less cache misses 
+will be faster. 
+
+\subsubsection{Memory Fences}
+In the modern CPUs instructions are executed out of order, if they can be rearranged in that way. This can happen per compiler 
+optimization or hardware support. For single threaded systems this would not be a problem as the read/write operations are not 
+contested by another thread. In our case in a multi threaded and multi process system we would have to enforce stricter 
+memory reordering to ensure correctness: for example that all the write operations are concluded before other read operations start. 
+Threading libraries usually have this already implemented. For better performance however, we do not enforce full fences. 
+synchronization light data structures or even synchronization free computations that can be used in a multi threading scenario 
+are the holy grail of the optimizations. Unfortunately for our purposes it is impossible to remove all synchronizations per 2011 paper by Attiya.
+
+\subsubsection{Compare and Swap}
+Memory synchronization instruction that atomically swaps the value if the given old value is still at the memory location we can swap 
+the value with the provided new. 
+
+\subsubsection{fork join based parallelism}
+
+
+
+Paper: Scheduling computations with provably low synchronization overheads(2018):
+
+General Idea: Work stealing deques entirely PRIVATE and they expose work only when they are signaled to. 
+They claim a huge improvement over the usual fully public deque. 
+Two Lowebounds are given: 
+      O(Task / \# num processors + critical path) 
+      O((C_cas  + C_fence ) * P * critical path)
+
+
+Work stealing algorithm has the threads(executables) stored in the deqeus they are then popped from the bottom and then executed on the thread. 
+After the execution is concluded they try to get another thread by popping from either bottom of the own deque or top of another workers deque. 
+By using another deque the worker becomes a thief and is stealing work from other workers. This method is provably efficient (Blumofe \& Leiserson, 1999) 
+    
+This approach assumed serialized execution per stealing operation, which in real life incurs synchronization overheads that even the owning threads need to pay. 
+
+There are different approaches to the synchronization problem: 
+  THE protocol 
+  Locks and mutexes
+  CAS and memory fences 
+
+Memory fences are very expensive: Morrison et al removed a single mfence instruction from CILK (own deque access). That single fence was accountable for 25\% 
+In 2011 Attiya et al proved that it is impossible to remove all synchronizations and maintain correctness. 
+
+All of these questions arise from the fact that work stealing is a way of load balancing. 
+Stealing can occur if there is work to steal. How should the worker then expose its work to other threads? 
+If it is too eager to expose work then there is unnecesary synchronization overhead( Acar et al., 2013; Dinan et al., 2008, 2009; Lifflander et al., 2012; Tzannes et al., 2011; van Dijk & van de Pol, 2014)
+If it is too restrictive then the oppurtunities for load balancing become limited therefore the asymptomatic promises cannot be held. 
+This work proposoes a Low Cost Work Stealing (LCWS): 
+All work is private. The processor p only uses synchronization when the processor p is directly asked for work. The processor p only exposes a single work each time. 
+
+The proposition is then proved over many lemmatas and so on. This is a good version of the work stealing. 
+
+
+
+
+\subsection{Paper: Scheduling Parallel Programs by Work Stealing with Private Deques}
+
+The main idea of this paper: work stealing algorithms with private work stealing deques and their theoretical runtimes guarantees\dots
+    Task Coalescing and steal-half strategies.  
+    Comparison with CILK. 
+
+    In theory, work stealing delivers close to optimal performance for a reasonably broad range of computations [8].
+  Arora et al [2] proposed the first such data structure for fixed-sized deques. Hendler et al [24] generalized that data structure to support unbounded deques;
+  Chase and Lev [10] used circular buffers to obtain deques whose size can grow without memory leaks.
+
+  The development of state-of-the-art concurrent-deque algorithms dates back to the nonblocking algorithm of Arora et al. [2], which went through a few revisions due to concurrency bugs. Several years later the nonblocking algorithm was extended by Chase and Lev to support dynamic resizing [10].
+
+  \delta as communication delay: Bounded by: 2.68 · δF <<   T1/P 
+  Sender vs  Receiver implementations are similar in runtime, receiver is faster withing 2\%.
+
+  The runtime is proven with branch limit and limit on the sequential runtime. 
+
+  Runtime is compared against CILK 
+    Question: is CILK the best?  Also compare against CILK. 
+
+
+\subsubsection{Paper: }
+  Numa aware stealing? This can improve the cache efficiency.
+
+      
+
+
+
+

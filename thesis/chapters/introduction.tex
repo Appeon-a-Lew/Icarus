@@ -1,0 +1,53 @@
+\chapter{Introduction}\label{chapter:introduction}
+
+\section{Motivation}
+In the evolution of computer architectures, several developmental phases have brought forth different problems and their respective solutions. From unified memory to Non-uniform memory access (NUMA) bringing cache hierarchies, from single core to many-core designs necessitating robust scheduling, modern CPUs have become more complex with each iteration. The latest trend is to increase computing power with more cores and more cache per core \cite{modernCPUs}.  
+
+Even before the emergence of the first multi-core CPU, scheduling with multithreading in mind was heavily researched. Initially, scheduling was designed for compute clusters with more than one CPU core or for multiprogramming on a single core. Nowadays, a commercial CPU has 8-16 threads, which shifts the focus from making multithreading and multiprogramming possible to making them efficient and fast \cite{multithreadingEvolution}.
+
+Parallel programming is necessary in today's computer architectures to take full advantage of their capabilities. In this context, many programming tools have been developed: from libraries such as Java concurrency API \cite{JavaConcurrency} and Intel's OneTBB \cite{IntelTBB}, to standalone programming languages like NVIDIA CUDA \cite{CUDA} and X10 \cite{X10}, or language extensions such as OpenMP \cite{OpenMP} and MPI \cite{MPI} for automatic parallelization.
+
+
+\section{Problem Statement}
+At the heart of parallel programming lies the division of a program's execution into so-called tasks, which are dispatched to threads to be executed concurrently. The aforementioned tools give developers the ability to specify strategies for partitioning execution. Some also support different scheduling and dispatching schemes. 
+
+However, as we move into the era of many-core CPUs with tens or hundreds of cores on a single chip, traditional scheduling approaches face significant challenges. The increasing core count exacerbates issues of load balancing, cache coherence, and memory access latency. In particular, low latency scheduling becomes crucial for a wide range of applications, from real-time systems and high-frequency trading to interactive user interfaces and responsive cloud services \cite{lowLatencyImportance}.
+
+From a computational intensity perspective, division of the execution is relatively inexpensive. The real challenge lies in the orchestration of concurrent execution with minimal latency. Fully utilizing cores while maintaining low latency requires sophisticated load balancing, which in the literature is achieved either by Work Sharing, where a thread with work deliberately gives up some work, or Work Stealing, where threads without tasks steal from threads with work \cite{loadBalancing}.
+
+\section{Significance of the Work}
+The need for low latency scheduling on many-core CPUs is becoming increasingly critical in various domains:
+
+\begin{itemize}
+    \item \textbf{Real-time Systems:} In applications such as autonomous vehicles, industrial automation, and financial trading systems, even millisecond delays can have severe consequences \cite{realTimeSystems}.
+    \item \textbf{Cloud Computing:} With the growing adoption of microservices architectures, efficient scheduling is crucial for maintaining responsiveness and managing resources effectively in large-scale distributed systems \cite{cloudComputing}.
+    \item \textbf{Scientific Computing:} Many scientific simulations and data analysis tasks require both high throughput and low latency to process vast amounts of data in reasonable timeframes \cite{scientificComputing}.
+    \item \textbf{Interactive Applications:} As users expect near-instantaneous responses from applications, low latency becomes a key factor in user experience and product success \cite{interactiveApps}.
+\end{itemize}
+
+By addressing the challenges of low latency scheduling on many-core CPUs, this work aims to contribute to the broader goal of enabling more efficient, responsive, and scalable computing systems across these critical domains.
+\section{Work Stealing and Its Challenges}
+Work Stealing is a provably efficient scheduler of parallel computations: the expected runtime of Work Stealing with total instructions $W$, critical path length $S$ on $P$ processors is $O(W/P + S)$, which is a constant factor away from optimal scheduling \cite{WS}. Work Sharing has a worse worst-case performance and a similar average case. 
+
+The performance of work stealing is not only theoretical; it is also the standard mode of scheduling used by many programming tools. While the logic of work stealing remains simple, there are variations to the data structures which hold the tasks per thread. Concurrent deques are used because of their $O(1)$ time complexity. However, synchronization of the deque, such as memory fence or compare-and-swap operations, is a major contributor to the runtime; even a single memory fence can account for up to 40\% of the total runtime \cite{syncronization}.
+
+\section{Contributions}
+This work aims to address some inefficiencies of Work Stealing in the context of many-core CPUs. Our key contributions are:
+
+\begin{enumerate}
+  \item A cache-aware partitioning scheme: Inspired by "Morsel driven parallelism" \cite{morsels}, our partitioner uses morsels to enforce cache locality of the whole range (part of the execution). This greatly improves cache performance without noticeable overhead.
+  
+  \item A hybrid scheduling mode: We introduce a hybrid mode of scheduling incorporating both Work Sharing and Work Stealing. By utilizing Mailboxing, work is delivered to threads before stealing is allowed, significantly improving task start times without causing substantial overhead in total runtime.
+  
+  \item Deque optimizations: We experimented with various types of deque optimizations, such as Private, Half-Private, and Chase-Lev, as well as share-half methods. This resulted in a scalable, cache-aware scheduler with provable efficiency and low latency.
+\end{enumerate}
+
+These contributions address key challenges in low-latency scheduling for many-core CPUs:
+\begin{itemize}
+  \item Broken Cache Locality
+  \item Start and inter-task latency
+  \item Overhead related to concurrent deques
+\end{itemize}
+
+\section{Thesis Outline}
+The rest of this work is structured as follows: Chapter 2 discusses the background of this topic in more detail. Chapter 3 introduces the techniques used in our scheduler. Chapter 4 describes the concrete implementation. Chapter 5 evaluates the performance of our scheduler, and lastly, Chapter 6 discusses our work, its limitations, and future directions.

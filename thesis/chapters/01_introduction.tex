@@ -5,3 +5,74 @@
 
 \section{Section}
 TODO: Explain the need, why it emerged etc.
+
+
+
+Frame of this work: 
+
+Latency comparison of work sharing vs work stealing. 
+
+What are the variables? 
+
+Morsels 
+Mailboxing 
+Workstealing normal 
+Workstealing deque
+Workstealing deque + signaling (similar to Mailboxing)
+Granulity of the separation?
+Comparison to: TBB, SYCL, and OpenCL and OMP
+
+%(Optional) Automatic threadlocalization of the data --> Maybe better affinity? [tbb::affinity_partitioner]
+
+
+How can I measure the Latency?
+Latency is the time it takes from the last interrupt till the start of the execution. 
+-> I can measure this pretty exact in my own implementations 
+  BUT this is not doable with TBB or SYCL as I do not have that much control over the execution 
+  (OPTIONAL) Extend the tbb/tbb.h or parallel\_for to measure as well? 
+
+What metrics are important here? 
+
+Cache: 
+     L1-dcache-load-misses    
+     L1-dcache-loads          
+     L1-dcache-stores         
+     L1-icache-load-misses    
+     LLC-loads                
+     LLC-load-misses          
+     LLC-stores            
+     LLC-store-misses
+
+Latency:
+  perf sched? 
+  custom? 
+  heating the caches beforehand
+
+Benchmark results: 
+  PBBS? 
+  Inf loops? 
+  Random events? 
+  Power consumption
+  scalability
+  different type of tasks -> different runtimes?
+  Resource contestion (when there are multiple events going on can I elastize the threads, ie change the number of them dynamically)
+  NUMA effect of morsels
+
+
+
+
+What is my contribution to the field of low latency scheduling?
+work stealing with morsels 
+Work stealing with signals + morsels 
+
+
+11.08.2024: 
+Todays TODO: 
+  1) Write the split deque suggested by Arora, Blumofe, and Plaxton (SPAA, 1998).
+  2) Implement the Job class 
+    2.1) must be able to invokable\_v
+    2.2) must be able to record the latency + execution time %[#Define XYZ and #if #endif]
+    2.3) must support morsels (tbb::blocked\_range<size\_t>)
+  
+
+  

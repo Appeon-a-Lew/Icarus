@@ -135,18 +135,65 @@ PGAS is a hybrid approach combining the shared memory aspect by logically partit
 
 
 \subsection{Problem Decomposition}
+%For parallel execution, the given problem needs to be decomposed into smaller processes. Problem decomposition refers to the way in which the processes are formulated. 
 
-A given task 
+One of the first steps in designing a parallel program is to break the problem into discrete "chunks" of work that can be distributed to multiple tasks. This is known as decomposition or partitioning.
+There are two basic ways to partition computational work among parallel tasks: data parallelism and task parallelism.
+
+\subsubsection{Task Parallelism} 
+
+Task parallelism is a parallel programming model that focuses on the concurrent execution of different tasks or processes. Unlike data parallelism, which applies the same operation to multiple data elements simultaneously, task parallelism emphasizes the distribution of distinct operations across multiple processing units.
+In task parallelism, a problem is decomposed into separate tasks that can be executed concurrently. These tasks often have different behaviors and may require inter-task communication, making it well-suited for problems with diverse subtasks. Task graphs or Directed Acyclic Graphs (DAGs) are commonly used to represent task dependencies and guide execution order.
+Key considerations in task parallelism include effective load balancing, managing task granularity, and efficient scheduling. Work stealing algorithms are often employed to dynamically balance workload across processors. Popular frameworks supporting task parallelism include OpenMP tasks, Intel Threading Building Blocks (TBB), Cilk Plus (Deprecated) and Taskflow.
+
+Task parallelism, particularly when implemented with work stealing, offers significant advantages in load balancing and scalability. Work stealing dynamically redistributes tasks among threads, reducing idle time and improving overall system utilization. This approach is especially effective for irregular workloads or when task execution times are unpredictable.
+However, task parallelism faces several challenges. In work stealing, the act of stealing can introduce cache coherence issues, especially in NUMA architectures. When a task is stolen, its data may need to be transferred between NUMA nodes, incurring latency penalties. Moreover, frequent stealing can lead to cache thrashing, negatively impacting performance.
+Synchronization mechanisms like mutexes, while necessary for maintaining data consistency, can become bottlenecks. Threads may experience significant waiting times due to lock contention, particularly in systems with high core counts. This can lead to decreased parallelism and increased latency, again showing the importance of lock-free algorithms.
+Task granularity presents another challenge. Too fine-grained tasks increase scheduling overhead, while too coarse-grained tasks limit parallelism. Achieving the right balance is crucial for optimal performance.
+Lastly, the effectiveness of work stealing can be limited by task dependencies. Complex dependency graphs may restrict stealing opportunities, potentially leading to load imbalances and reduced parallel efficiency.
 
 
-\subsubsection{Task Level Decomposition}
 
-\subsubsection{Data Level Decomposition}
 
-\subsubsection{Stream and Implicit Parallelization}
 
+
+
+\subsubsection{Data Parallelism}
+Data parallelism is a parallel programming model that focuses on distributing data across multiple processing units, which then perform the same operation on different data subsets simultaneously \cite{Hillis1986}. This approach is particularly effective for problems with regular data structures, such as arrays or matrices, where the same computation can be applied independently to many data elements \cite{Blelloch1990}.
+
+One of the key advantages of data parallelism is its scalability. As the data size increases, more processing units can be added to maintain or improve performance \cite{Darema2001}. This model also often leads to simpler program structures, as the same code is replicated across processing units, reducing the complexity of parallel programming \cite{Chamberlain2007}.
+
+However, data parallelism faces challenges in load balancing, especially when data is non-uniformly distributed or when computations on different data elements take varying amounts of time \cite{Yelick1998}. Communication overhead can also become a bottleneck, particularly when data needs to be exchanged between processing units or when dealing with distributed memory systems \cite{Dinan2009}.
+
+Modern implementations of data parallelism often utilize SIMD (Single Instruction, Multiple Data) instructions available in many processors, allowing for efficient vectorization of computations \cite{Fog2017}. GPU computing has also embraced data parallelism, offering massive parallelism for suitable problems \cite{Owens2008}.
+
+Recent research in data parallelism focuses on improving its applicability to irregular problems, enhancing load balancing techniques, and integrating it with other parallel programming models for hybrid approaches \cite{Kulkarni2007}.
+
+\begin{thebibliography}{9}
+\bibitem{Hillis1986} Hillis, W.D., Steele Jr, G.L.: Data parallel algorithms. Communications of the ACM 29(12), 1170-1183 (1986)
+
+\bibitem{Blelloch1990} Blelloch, G.E.: Vector models for data-parallel computing. MIT press (1990)
+
+\bibitem{Darema2001} Darema, F.: The spmd model: Past, present and future. In: European Parallel Virtual Machine/Message Passing Interface Users' Group Meeting, pp. 1-1. Springer, Berlin, Heidelberg (2001)
+
+\bibitem{Chamberlain2007} Chamberlain, B.L., Callahan, D., Zima, H.P.: Parallel programmability and the Chapel language. The International Journal of High Performance Computing Applications 21(3), 291-312 (2007)
+
+\bibitem{Yelick1998} Yelick, K., Semenzato, L., Pike, G., Miyamoto, C., Liblit, B., Krishnamurthy, A., Hilfinger, P., Graham, S., Gay, D., Colella, P., Aiken, A.: Titanium: A high-performance Java dialect. Concurrency: Practice and Experience 10(11-13), 825-836 (1998)
+  
+\bibitem{Dinan2009} Dinan, J., Larkins, D.B., Sadayappan, P., Krishnamoorthy, S., Nieplocha, J.: Scalable work stealing. In: Proceedings of the Conference on High Performance Computing Networking, Storage and Analysis, pp. 1-11 (2009)
+
+\bibitem{Fog2017} Fog, A.: The microarchitecture of Intel, AMD and VIA CPUs: An optimization guide for assembly programmers and compiler makers. Copenhagen University College of Engineering (2017)
+
+\bibitem{Owens2008} Owens, J.D., Houston, M., Luebke, D., Green, S., Stone, J.E., Phillips, J.C.: GPU computing. Proceedings of the IEEE 96(5), 879-899 (2008)
+
+\bibitem{Kulkarni2007} Kulkarni, M., Burtscher, M., Cascaval, C., Pingali, K.: Lonestar: A suite of parallel irregular programs. In: 2009 IEEE International Symposium on Performance Analysis of Systems and Software, pp. 65-76. IEEE (2009)
+\end{thebibliography}
+
+
+More often than not, a combination of two is used to maximize parallelism. This classification is not strict. Some problems can benefit from both task and data parallelism, namely matrix multiplications, image operations etc. For a general purpose scheduler, task parallelism is more suitable. 
 
 \section{Low Latency Scheduling}
+
 
 
 \section{Cache Aware Scheduling}

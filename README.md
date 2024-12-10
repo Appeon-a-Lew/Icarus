@@ -22,5 +22,4 @@ This project introduces a hybrid scheduling algorithm designed for low-latency t
 - Developers looking to optimize task scheduling for modern parallel workloads.
 
 ## Getting Started
-
-Integrate the hybrid scheduling algorithm into your projects to leverage its low-latency and high-performance capabilities. Detailed examples and benchmark results are provided in the documentation.
+Use the parallel_for.h or scheduler.h in your code. 
